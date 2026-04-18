@@ -73,6 +73,30 @@ impl ServerPingResponse {
         }
     }
 
+    /// Builds a synthetic response with a specific protocol version.
+    pub fn synthetic_with_version(
+        protocol_version: i32,
+        description: &str,
+        favicon: Option<&str>,
+        version_name: Option<&str>,
+        max_players: Option<i32>,
+    ) -> Self {
+        Self {
+            version: PingVersion {
+                name: version_name.unwrap_or("Infrarust").to_string(),
+                protocol: protocol_version,
+            },
+            players: PingPlayers {
+                max: max_players.unwrap_or(0),
+                online: 0,
+                sample: vec![],
+            },
+            description: serde_json::json!({"text": description}),
+            favicon: favicon.map(String::from),
+            extra: serde_json::Map::new(),
+        }
+    }
+
     /// Applies config overrides from a `MotdEntry` onto this response.
     ///
     /// `text` always overrides the description. Other fields override only

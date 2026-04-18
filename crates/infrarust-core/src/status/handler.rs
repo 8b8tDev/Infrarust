@@ -93,6 +93,10 @@ impl StatusHandler {
         let routing = ctx.extensions.get::<RoutingData>().cloned();
         let handshake = ctx.extensions.get::<HandshakeData>().cloned();
 
+        let protocol_version = handshake
+            .as_ref()
+            .map_or(ProtocolVersion(CURRENT_MC_PROTOCOL), |h| h.protocol_version);
+
         self.read_status_request(ctx).await?;
 
         let mut response = self
@@ -101,6 +105,7 @@ impl StatusHandler {
                 routing.as_ref(),
                 handshake.as_ref(),
                 connection_registry,
+                protocol_version,
             )
             .await;
 
@@ -134,9 +139,10 @@ impl StatusHandler {
         routing: Option<&RoutingData>,
         handshake: Option<&HandshakeData>,
         connection_registry: &ConnectionRegistry,
+        protocol_version: ProtocolVersion,
     ) -> ServerPingResponse {
         let Some(routing) = routing else {
-            return self.build_default_motd_response();
+            return self.build_default_motd_response(protocol_version.0);
         };
 
         let config = &routing.server_config;
@@ -148,13 +154,20 @@ impl StatusHandler {
             match sm.get_state(config_id) {
                 Some(ServerState::Online) | None => {}
                 Some(state) => {
-                    return Self::build_state_motd(config, state);
+                    return Self::build_state_motd(config, state, protocol_version.0);
                 }
             }
         }
 
         let mut response = self
-            .relay_or_cache(ctx, config, config_id, handshake, connection_registry)
+            .relay_or_cache(
+                ctx,
+                config,
+                config_id,
+                handshake,
+                connection_registry,
+                protocol_version,
+            )
             .await;
 
         if let Some(ref online) = config.motd.online {
@@ -181,6 +194,7 @@ impl StatusHandler {
         config_id: &str,
         handshake: Option<&HandshakeData>,
         connection_registry: &ConnectionRegistry,
+        protocol_version: ProtocolVersion,
     ) -> ServerPingResponse {
         if let Some((response, _latency)) = self.cache.get_fresh(config_id) {
             return response;
@@ -198,8 +212,6 @@ impl StatusHandler {
         }
 
         let domain = handshake.map_or("localhost", |h| h.domain.as_str());
-        let protocol_version =
-            handshake.map_or(ProtocolVersion(CURRENT_MC_PROTOCOL), |h| h.protocol_version);
         let client_info = ctx.connection_info();
 
         match self
@@ -229,11 +241,15 @@ impl StatusHandler {
             return response;
         }
 
-        self.build_unreachable_motd(config, connection_registry, config_id)
+        self.build_unreachable_motd(config, connection_registry, config_id, protocol_version.0)
     }
 
     /// Builds a synthetic MOTD for the given server manager state.
-    fn build_state_motd(config: &ServerConfig, state: ServerState) -> ServerPingResponse {
+    fn build_state_motd(
+        config: &ServerConfig,
+        state: ServerState,
+        protocol_version: i32,
+    ) -> ServerPingResponse {
         let (motd_entry, default_text) = match state {
             ServerState::Sleeping => (
                 config.motd.sleeping.as_ref(),
@@ -252,9 +268,18 @@ impl StatusHandler {
         };
 
         motd_entry.map_or_else(
-            || ServerPingResponse::synthetic(default_text, None, None, None),
+            || {
+                ServerPingResponse::synthetic_with_version(
+                    protocol_version,
+                    default_text,
+                    None,
+                    None,
+                    None,
+                )
+            },
             |entry| {
-                ServerPingResponse::synthetic(
+                ServerPingResponse::synthetic_with_version(
+                    protocol_version,
                     &entry.text,
                     entry.favicon.as_deref(),
                     entry.version_name.as_deref(),
@@ -265,13 +290,22 @@ impl StatusHandler {
     }
 
     /// Builds a response from the global `default_motd` (unknown domain).
-    fn build_default_motd_response(&self) -> ServerPingResponse {
+    fn build_default_motd_response(&self, protocol_version: i32) -> ServerPingResponse {
         let entry = self.default_motd.as_ref().and_then(|m| m.online.as_ref());
 
         entry.map_or_else(
-            || ServerPingResponse::synthetic("An Infrarust Proxy", None, None, None),
+            || {
+                ServerPingResponse::synthetic_with_version(
+                    protocol_version,
+                    "An Infrarust Proxy",
+                    None,
+                    None,
+                    None,
+                )
+            },
             |entry| {
-                ServerPingResponse::synthetic(
+                ServerPingResponse::synthetic_with_version(
+                    protocol_version,
                     &entry.text,
                     entry.favicon.as_deref(),
                     entry.version_name.as_deref(),
@@ -287,9 +321,11 @@ impl StatusHandler {
         config: &ServerConfig,
         connection_registry: &ConnectionRegistry,
         config_id: &str,
+        protocol_version: i32,
     ) -> ServerPingResponse {
         if let Some(ref entry) = config.motd.unreachable {
-            return ServerPingResponse::synthetic(
+            return ServerPingResponse::synthetic_with_version(
+                protocol_version,
                 &entry.text,
                 entry.favicon.as_deref(),
                 entry.version_name.as_deref(),
@@ -302,7 +338,8 @@ impl StatusHandler {
             .as_ref()
             .and_then(|m| m.unreachable.as_ref())
         {
-            return ServerPingResponse::synthetic(
+            return ServerPingResponse::synthetic_with_version(
+                protocol_version,
                 &entry.text,
                 entry.favicon.as_deref(),
                 entry.version_name.as_deref(),
@@ -310,7 +347,8 @@ impl StatusHandler {
             );
         }
 
-        let mut resp = ServerPingResponse::synthetic(
+        let mut resp = ServerPingResponse::synthetic_with_version(
+            protocol_version,
             "\u{00a7}cServer unreachable",
             None,
             None,
